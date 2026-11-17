@@ -1,3 +1,39 @@
+EC602 Course Project (fork notes)
+=================================
+
+This fork is for the EC602 (Design by Software, Fall 2026) final project, Track 1. Our work is on the ``fix-13693-15237`` branch.
+
+Issues we are working on
+------------------------
+
+- `#13693 <https://github.com/pytest-dev/pytest/issues/13693>`_:
+  live logging from background threads can make ``capsys``/``capfd`` lose output.
+  While a live log message is printed, pytest suspends output capture for the
+  whole process, so anything another thread writes at that moment goes to the
+  terminal instead of the capture.
+
+- `#15237 <https://github.com/pytest-dev/pytest/issues/15237>`_:
+  logging capture can crash with
+  ``RuntimeError: dictionary changed size during iteration`` when another thread
+  creates a logger while pytest is setting up log capture.
+
+Checkpoint (November 17, 2026)
+------------------------------
+
+Files changed:
+
+- ``testing/logging/test_fixture.py``: new regression test for #15237.
+- ``testing/logging/test_reporting.py``: new regression test for #13693,
+  parametrized over ``capsys`` and ``capfd``.
+- ``README.rst``: this section.
+
+Status: both new tests fail on unmodified pytest for the reason given in each
+issue, and the #13693 test fails in 20 out of 20 runs. The full test suite
+gives 4730 passed and 3 failed, and the 3 failures are our new tests. The fixes
+(in ``src/_pytest/logging.py`` and ``src/_pytest/capture.py``) are next.
+
+------
+
 .. image:: https://github.com/pytest-dev/pytest/raw/main/doc/en/img/pytest_logo_curves.svg
    :target: https://docs.pytest.org/en/stable/
    :align: center
