@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 import logging
+import threading
 
 from _pytest.logging import caplog_records_key
+from _pytest.logging import catching_logs
 from _pytest.pytester import Pytester
 import pytest
 
@@ -582,3 +584,60 @@ def test_log_report_captures_according_to_config_option_upon_failure(
         ["*Print message*", "*INFO log message*", "*WARNING log message*"]
     )
     assert result.ret == 1
+
+
+def test_catching_logs_tolerates_logger_registered_by_another_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for #15237.
+
+    ``catching_logs.__enter__`` walks the logger registry looking for
+    non-propagating loggers. Another thread can register a logger while it
+    does, and that must not make the walk fail with "dictionary changed size
+    during iteration".
+
+    To make the race deterministic, a logger in the registry starts the other
+    thread from its ``propagate`` property, which ``catching_logs`` reads in
+    the middle of its walk, and waits for that thread to register its logger.
+    """
+    trigger_name = "pytest_test_trigger_logger"
+    registered_name = "pytest_test_registered_by_other_thread"
+    registered = threading.Event()
+    workers: list[threading.Thread] = []
+
+    def register_logger() -> None:
+        logging.getLogger(registered_name)
+        registered.set()
+
+    class RegistersLoggerWhenInspected(logging.Logger):
+        @property
+        def propagate(self) -> bool:
+            if not workers:
+                workers.append(threading.Thread(target=register_logger))
+                workers[0].start()
+                # Not asserted here: if the registry were locked during the
+                # walk, the other thread could only finish afterwards. The
+                # assertion at the end of the test covers that case too.
+                registered.wait(timeout=5)
+            return True
+
+        @propagate.setter
+        def propagate(self, value: bool) -> None:
+            pass
+
+    manager = logging.root.manager
+    monkeypatch.setitem(
+        manager.loggerDict, trigger_name, RegistersLoggerWhenInspected(trigger_name)
+    )
+    handler = logging.NullHandler()
+    try:
+        with catching_logs(handler):
+            pass
+    finally:
+        # If __enter__ raised, __exit__ never ran and the handler stays attached.
+        logging.getLogger().removeHandler(handler)
+        for worker in workers:
+            worker.join(timeout=5)
+        manager.loggerDict.pop(registered_name, None)
+
+    assert registered.is_set()

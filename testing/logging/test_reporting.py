@@ -1019,6 +1019,62 @@ def test_live_logging_suspends_capture(
     assert cast(io.StringIO, out_file).getvalue() == "\nsome message\n"
 
 
+@pytest.mark.parametrize("capture_fixture_name", ["capsys", "capfd"])
+def test_live_logging_does_not_lose_output_written_by_other_threads(
+    capture_fixture_name: str, request: FixtureRequest
+) -> None:
+    """Regression test for #13693.
+
+    Capture is suspended while a live log message is written. Output that
+    another thread writes in that window goes to the real stream instead of
+    to the active ``capsys``/``capfd``, so it is missing from ``readouterr()``.
+
+    The race is forced instead of left to chance: the terminal that live
+    logging writes to pauses in the middle of the message, and this thread
+    writes while it is paused.
+    """
+    import logging
+    import sys
+    import threading
+
+    from _pytest.logging import _LiveLoggingStreamHandler
+
+    capture = request.getfixturevalue(capture_fixture_name)
+    capture_manager = request.config.pluginmanager.getplugin("capturemanager")
+    in_live_log = threading.Event()
+    resume_live_log = threading.Event()
+
+    class PausingTerminal(io.StringIO):
+        def write(self, s: str) -> int:
+            # Pause on the first write only, i.e. in the middle of the message.
+            if not in_live_log.is_set():
+                in_live_log.set()
+                resume_live_log.wait(timeout=10)
+            return super().write(s)
+
+    handler = _LiveLoggingStreamHandler(
+        cast(TerminalReporter, PausingTerminal()),
+        cast(CaptureManager, capture_manager),
+    )
+    record = logging.LogRecord(
+        __name__, logging.CRITICAL, __file__, 0, "live log message", None, None
+    )
+    live_log_thread = threading.Thread(target=handler.emit, args=(record,))
+    live_log_thread.start()
+    try:
+        assert in_live_log.wait(timeout=10), "live logging never wrote its message"
+        sys.stderr.write("written while live logging\n")
+        sys.stderr.flush()
+    finally:
+        resume_live_log.set()
+        live_log_thread.join(timeout=10)
+
+    err = capture.readouterr().err
+    assert "written while live logging\n" in err, (
+        "output written during live logging was lost from the capture"
+    )
+
+
 def test_collection_live_logging(pytester: Pytester) -> None:
     pytester.makepyfile(
         """
